@@ -583,7 +583,6 @@ function updateTokenLink() {
   const params = new URLSearchParams({
     name: 'Satellite',
     target_name: username,
-    contents: 'write',
   });
   document.getElementById('token-link').href =
     `https://github.com/settings/personal-access-tokens/new?${params}`;
