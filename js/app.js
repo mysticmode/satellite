@@ -58,6 +58,31 @@ function escAttr(s) {
 }
 
 
+// --- Pending post cache (optimistic UI for own posts) ---
+
+const PENDING_KEY = 'satproto_pending_posts';
+
+function savePendingPost(post) {
+  const pending = getPendingPosts();
+  pending.push({ ...post, _pending: true });
+  localStorage.setItem(PENDING_KEY, JSON.stringify(pending));
+}
+
+function getPendingPosts() {
+  try {
+    return JSON.parse(localStorage.getItem(PENDING_KEY) || '[]');
+  } catch {
+    return [];
+  }
+}
+
+function clearSyncedPosts(remoteIds) {
+  const pending = getPendingPosts();
+  const remaining = pending.filter((p) => !remoteIds.has(p.id));
+  localStorage.setItem(PENDING_KEY, JSON.stringify(remaining));
+  return remaining;
+}
+
 // --- UI ---
 
 function showSetup() {
@@ -135,7 +160,7 @@ async function refreshFeed() {
     const sk = getSecretKey();
     const postArrays = [];
 
-    for (const followed of followList.follows) {
+    for (const followed of [domain, ...followList.follows]) {
       try {
         const posts = await feed.fetchUserPosts(
           followed,
@@ -148,6 +173,10 @@ async function refreshFeed() {
         console.warn(`Failed to fetch from ${followed}:`, e);
       }
     }
+
+    const remoteIds = new Set(postArrays.flat().map((p) => p.id));
+    const pendingPosts = clearSyncedPosts(remoteIds);
+    if (pendingPosts.length > 0) postArrays.push(pendingPosts);
 
     const merged = feed.mergeFeed(postArrays);
 
@@ -335,6 +364,7 @@ async function publishPost(post) {
     github.binaryEntry(`posts/${post.id}.json.enc`, encrypted),
     github.textEntry('posts/index.json', JSON.stringify(index)),
   ], post.reply_to ? `reply: ${post.id}` : `new post: ${post.id}`);
+  savePendingPost(post);
   await refreshFeed();
 }
 
