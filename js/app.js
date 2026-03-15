@@ -348,10 +348,7 @@ window.signIn = async function () {
     const publicKey = crypto.derivePublicKey(secretKey);
 
     // Fetch and decrypt self data from the site
-    const base = await feed.getSatBase(domain);
-    const resp = await fetch(`${base}/keys/_self.json`);
-    if (!resp.ok) throw new Error('Could not fetch self data — has this site been initialized?');
-    const envelope = await resp.json();
+    const envelope = await feed.fetchSelfData(domain);
     const sealed = crypto.fromBase64(envelope.sealed_data);
     const decrypted = crypto.openSealedBox(sealed, secretKey);
     const selfData = JSON.parse(new TextDecoder().decode(decrypted));
@@ -401,8 +398,24 @@ window.reinitialize = async function () {
   }
 };
 
+async function publishPost(post) {
+  const { token, repo } = getState();
+  const contentKey = getContentKey();
+  const encrypted = crypto.encryptData(
+    new TextEncoder().encode(JSON.stringify(post)), contentKey
+  );
+  const index = await feed.fetchPostIndexOrEmpty(getDomain());
+  index.posts.unshift(post.id);
+  await github.pushFiles(token, repo, [
+    github.binaryEntry(`posts/${post.id}.json.enc`, encrypted),
+    github.textEntry('posts/index.json', JSON.stringify(index)),
+  ], post.reply_to ? `reply: ${post.id}` : `new post: ${post.id}`);
+  savePendingPost(post);
+  await refreshFeed();
+}
+
 window.submitPost = async function () {
-  const { domain, token, repo } = getState();
+  const { domain } = getState();
   const text = document.getElementById('post-text').value.trim();
   if (!text) return;
 
@@ -411,41 +424,19 @@ window.submitPost = async function () {
   btn.textContent = 'Posting...';
 
   try {
-    const id = generatePostId();
-    const post = {
-      id,
+    await publishPost({
+      id: generatePostId(),
       author: domain,
       created_at: new Date().toISOString(),
       text,
-    };
-
-    const contentKey = getContentKey();
-    const postJson = new TextEncoder().encode(JSON.stringify(post));
-    const encrypted = crypto.encryptData(postJson, contentKey);
-
-    // Update post index
-    let index;
-    try {
-      index = await feed.fetchPostIndex(domain);
-    } catch {
-      index = { posts: [] };
-    }
-    index.posts.unshift(id);
-
-    await github.pushFiles(token, repo, [
-      github.binaryEntry(`posts/${id}.json.enc`, encrypted),
-      github.textEntry('posts/index.json', JSON.stringify(index)),
-    ], `new post: ${id}`);
-
+    });
     document.getElementById('post-text').value = '';
-    savePendingPost(post);
-    await refreshFeed();
   } catch (e) {
     alert('Failed to post: ' + e);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Post';
   }
-
-  btn.disabled = false;
-  btn.textContent = 'Post';
 };
 
 window.doFollow = async function () {
@@ -470,12 +461,7 @@ window.doFollow = async function () {
       encrypted_key: crypto.toBase64(sealed),
     };
     // Update follow list
-    let list;
-    try {
-      list = await feed.fetchFollowList(domain);
-    } catch {
-      list = { follows: [] };
-    }
+    const list = await feed.fetchFollowListOrEmpty(domain);
     if (!list.follows.includes(target)) {
       list.follows.push(target);
     }
@@ -491,10 +477,10 @@ window.doFollow = async function () {
     await refreshFeed();
   } catch (e) {
     alert('Failed to follow: ' + e);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Follow';
   }
-
-  btn.disabled = false;
-  btn.textContent = 'Follow';
 };
 
 window.doUnfollow = async function (target) {
@@ -509,12 +495,7 @@ window.doUnfollow = async function (target) {
     const oldContentKey = getContentKey();
 
     // Fetch post index
-    let index;
-    try {
-      index = await feed.fetchPostIndex(domain);
-    } catch {
-      index = { posts: [] };
-    }
+    const index = await feed.fetchPostIndexOrEmpty(domain);
 
     // Generate new content key
     const newContentKey = crypto.generateContentKey();
@@ -540,12 +521,7 @@ window.doUnfollow = async function (target) {
     }
 
     // Update follow list
-    let list;
-    try {
-      list = await feed.fetchFollowList(domain);
-    } catch {
-      list = { follows: [] };
-    }
+    const list = await feed.fetchFollowListOrEmpty(domain);
     list.follows = list.follows.filter((d) => d !== target);
 
     // Re-create key envelopes for remaining followers
@@ -579,37 +555,16 @@ window.doUnfollow = async function (target) {
 window.doReply = async function (postId, postAuthor) {
   const text = prompt('Reply:');
   if (!text) return;
-  const { domain, token, repo } = getState();
+  const { domain } = getState();
   try {
-    const id = generatePostId();
-    const post = {
-      id,
+    await publishPost({
+      id: generatePostId(),
       author: domain,
       created_at: new Date().toISOString(),
       text,
       reply_to: postId,
       reply_to_author: postAuthor,
-    };
-
-    const contentKey = getContentKey();
-    const postJson = new TextEncoder().encode(JSON.stringify(post));
-    const encrypted = crypto.encryptData(postJson, contentKey);
-
-    let index;
-    try {
-      index = await feed.fetchPostIndex(domain);
-    } catch {
-      index = { posts: [] };
-    }
-    index.posts.unshift(id);
-
-    await github.pushFiles(token, repo, [
-      github.binaryEntry(`posts/${id}.json.enc`, encrypted),
-      github.textEntry('posts/index.json', JSON.stringify(index)),
-    ], `reply: ${id}`);
-
-    savePendingPost(post);
-    await refreshFeed();
+    });
   } catch (e) {
     alert('Failed to reply: ' + e);
   }
